@@ -1,63 +1,109 @@
-const express = require('express');
-const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
-const db = require('../config/db');
-require('dotenv').config();
+const express = require("express");
+const bcrypt = require("bcryptjs");
+const jwt = require("jsonwebtoken");
+const User = require("../models/user");
 
 const router = express.Router();
+const invalidatedTokens = new Set();
 
-// Register User
-router.post('/register', async (req, res) => {
-  const { name, phone, email, password } = req.body;
+// Helper function for handling errors
+const handleError = (res, status, message, data = null) => {
+  const response = { message };
+  if (data) response.data = data;
+  return res.status(status).json(response);
+};
 
-  // Validasi input
-  if (!name || !phone || !email || !password) {
-    return res.status(400).json({ message: 'All fields are required.' });
+// Route: User Registration
+router.post("/register", async (req, res) => {
+  const { fullname, no_hp, email, password } = req.body;
+
+  if (!fullname || !no_hp || !email || !password) {
+    return handleError(res, 400, "All fields must be filled!");
   }
 
-  // Cek apakah email sudah terdaftar
-  db.query('SELECT * FROM users WHERE email = ?', [email], async (err, result) => {
-    if (err) return res.status(500).json({ message: 'Database error.' });
-    if (result.length > 0) {
-      return res.status(400).json({ message: 'Email already registered.' });
+  try {
+    const userExist = await User.findOne({ where: { email } });
+    if (userExist) {
+      return handleError(res, 400, "Email already exists!");
     }
 
-    // Hash password
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    // Simpan user ke database
-    const user = { name, phone, email, password: hashedPassword };
-    db.query('INSERT INTO users SET ?', user, (err, result) => {
-      if (err) return res.status(500).json({ message: 'Database error.' });
-      res.status(201).json({ message: 'User registered successfully.' });
+    await User.create({
+      fullname,
+      no_hp,
+      email,
+      password: hashedPassword,
     });
-  });
+
+    res.status(201).json({ message: "User registration successful!" });
+  } catch (error) {
+    if (error.name === "SequelizeValidationError") {
+      const validationErrors = error.errors.map((err) => ({
+        field: err.path,
+        message: err.message,
+      }));
+      return handleError(res, 400, "Validation Error", { errors: validationErrors });
+    }
+
+    console.error("Error during registration:", error);
+    handleError(res, 500, "Server Error");
+  }
 });
 
-// Login User
-router.post('/login', (req, res) => {
+// Route: User Login
+router.post("/login", async (req, res) => {
   const { email, password } = req.body;
 
-  if (!email || !password) {
-    return res.status(400).json({ message: 'Email and password are required.' });
+  try {
+    const user = await User.findOne({ where: { email } });
+
+    if (!user || !(await bcrypt.compare(password, user.password))) {
+      return handleError(res, 401, "Invalid email or password");
+    }
+
+    const token = jwt.sign(
+      { id: user.id, email: user.email },
+      process.env.SECRET_KEY,
+      { expiresIn: "365d" }
+    );
+
+    res.json({
+      message: "Login successful",
+      data: {
+        userId: user.id,
+        name: user.fullname,
+        email: user.email,
+        photo_url: user.photo_url,
+        no_hp: user.no_hp,
+        token,
+      },
+    });
+  } catch (error) {
+    console.error("Error during login:", error);
+    handleError(res, 500, "Internal server error", {
+      error: error.message,
+      stack: error.stack,
+    });
+  }
+});
+
+// Route: User Logout
+router.post("/logout", (req, res) => {
+  const authHeader = req.headers["authorization"];
+  if (!authHeader) {
+    return handleError(res, 401, "Unauthorized: Missing token");
   }
 
-  db.query('SELECT * FROM users WHERE email = ?', [email], async (err, result) => {
-    if (err) return res.status(500).json({ message: 'Database error.' });
-    if (result.length === 0) {
-      return res.status(404).json({ message: 'User not found.' });
-    }
+  const token = authHeader.split(" ")[1];
 
-    const user = result[0];
-    const isPasswordValid = await bcrypt.compare(password, user.password);
-    if (!isPasswordValid) {
-      return res.status(401).json({ message: 'Invalid password.' });
-    }
-
-    // Generate JWT
-    const token = jwt.sign({ id: user.id, email: user.email }, process.env.JWT_SECRET, { expiresIn: '1h' });
-    res.status(200).json({ message: 'Login successful.', token });
-  });
+  try {
+    invalidatedTokens.add(token);
+    res.json({ message: "Logout successful" });
+  } catch (error) {
+    console.error("Error during logout:", error);
+    handleError(res, 401, "Unauthorized: Invalid token");
+  }
 });
 
 module.exports = router;
