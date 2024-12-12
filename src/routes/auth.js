@@ -9,10 +9,10 @@ const router = express.Router();
 
 // Register User
 router.post('/register', async (req, res) => {
-  const { name, phone, email, password } = req.body;
+  const { name, email, password } = req.body;
 
   // Validasi input
-  if (!name || !phone || !email || !password) {
+  if (!name || !email || !password) {
     return res.status(400).json({ message: 'All fields are required.' });
   }
 
@@ -36,7 +36,6 @@ router.post('/register', async (req, res) => {
   await prisma.user.create({
     data: {
       name: name,
-      phone: phone,
       email: email,
       auth: hashedPassword
     }
